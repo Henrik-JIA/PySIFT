@@ -1,6 +1,7 @@
 import sys
 import os
 import numpy as np
+import cv2
 from src.util.image_loader import ImageLoader
 from src.Pyramid.extract_sift_features import extract_sift_features
 from PIL import Image  
@@ -37,6 +38,35 @@ def main():
         print(f"处理图片时出错: {str(e)}")
         sys.exit(1)
 
+def match_descriptors(descriptors1, descriptors2, ratio_threshold=0.7):
+    """
+    使用FLANN匹配器匹配两组描述符，并应用Lowe's ratio test
+    
+    参数:
+        descriptors1 (numpy.ndarray): 第一组描述符
+        descriptors2 (numpy.ndarray): 第二组描述符
+        ratio_threshold (float): Lowe's ratio test的阈值（默认0.7）
+    
+    返回:
+        list: 筛选后的匹配点列表
+    """
+    # 初始化FLANN匹配器
+    FLANN_INDEX_KDTREE = 0
+    index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+    search_params = dict(checks=50)
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
+    
+    # 进行KNN匹配
+    matches = flann.knnMatch(descriptors1, descriptors2, k=2)
+    
+    # 应用Lowe's ratio test
+    good_matches = []
+    for m, n in matches:
+        if m.distance < ratio_threshold * n.distance:
+            good_matches.append(m)
+    
+    return good_matches
+
 def process_image_data(image_data_exif):
     """
     处理并显示图片数据
@@ -44,8 +74,10 @@ def process_image_data(image_data_exif):
     参数:
     image_data (list): 包含图片数据的字典列表
     """
+    MIN_MATCH_COUNT = 10
     keypoints_list = []
     descriptors_list = []
+    imgs_list = []
     for idx, img_exif in enumerate(image_data_exif):
         print(f"\n图片 #{idx+1}: {img_exif['path']}")
         print(f"尺寸: {img_exif['width']}x{img_exif['height']}")
@@ -58,14 +90,67 @@ def process_image_data(image_data_exif):
 
         # 打开图片并转为灰度图
         image = Image.open(img_exif['path']).convert('L')
-        
+        imgs_list.append(image)
+
         # 提取SIFT特征
         keypoints, descriptors = extract_sift_features(image)
-        print(keypoints)
-        print(descriptors)
         keypoints_list.append(keypoints)
         descriptors_list.append(descriptors)
 
+    good_matches = match_descriptors(descriptors_list[0], descriptors_list[1], ratio_threshold=0.7)
+
+    if len(good_matches) > MIN_MATCH_COUNT:
+        kp1 = keypoints_list[0]
+        kp2 = keypoints_list[1]
+        img1 = imgs_list[0]
+        img2 = imgs_list[1]
+
+        # 提取匹配点的坐标（针对字典结构的关键点）
+        src_pts = np.float32([ [kp1[m.queryIdx]['x'], kp1[m.queryIdx]['y'] ] for m in good_matches]).reshape(-1, 1, 2)
+        dst_pts = np.float32([ [kp2[m.trainIdx]['x'], kp2[m.trainIdx]['y'] ] for m in good_matches]).reshape(-1, 1, 2)
+        
+        # 计算单应性矩阵
+        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        
+        if M is not None:
+            # 在场景图像上绘制检测到的模板边界
+            w, h = img1.size
+            pts = np.float32([[0, 0],
+                              [0, h - 1],
+                              [w - 1, h - 1],
+                              [w - 1, 0]]).reshape(-1, 1, 2)
+            dst = cv2.perspectiveTransform(pts, M)
+            
+            # 绘制多边形边界
+            img2_np = np.array(img2)
+            img2_with_poly = cv2.polylines(img2_np, [np.int32(dst)], True, 255, 3, cv2.LINE_AA)
+            
+            # 创建拼接图像
+            nHeight = max(img1.size[1], img2.size[1]) # 高度是size[1]
+            nWidth = img1.size[0] + img2.size[0] # 宽度是size[0]
+            newimg = np.zeros((nHeight, nWidth), dtype=np.uint8)
+            
+            # 放置图像
+            img1_np = np.array(img1)
+            newimg[:img1.size[1], :img1.size[0]] = img1_np
+            newimg[:img2.size[1], img1.size[0]:img1.size[0]+img2.size[0]] = img2_with_poly
+            
+            # 绘制匹配线
+            for m in good_matches:
+                pt1 = (int(kp1[m.queryIdx]['x']), int(kp1[m.queryIdx]['y']))
+                pt2 = (int(kp2[m.trainIdx]['x']) + img1.size[1], int(kp2[m.trainIdx]['y']))
+                cv2.line(newimg, pt1, pt2, 200, 1)  # 灰色线条
+            
+            # 显示结果
+            plt.figure(figsize=(15, 10))
+            plt.imshow(newimg, cmap='gray')
+            plt.title(f"匹配点数量: {len(good_matches)}")
+            plt.axis('off')
+            plt.show(block=True)
+        else:
+            print("单应性矩阵计算失败")
+    else:
+        print("Not enough matches are found - %d/%d" % (len(good_matches), MIN_MATCH_COUNT))
 
 def display_exif_info(img_data):
     """显示重要的EXIF信息"""

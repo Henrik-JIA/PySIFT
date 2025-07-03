@@ -345,7 +345,7 @@ def compute_keypoints_with_orientations(keypoint, octave_idx, gaussian_image, ra
     
     return keypoints_with_orientations
 
-def find_scale_space_extrema(gaussian_pyramid, dog_pyramid, gaussian_sigmas, num_intervals, border_width, contrast_thresh=0.04, candidate_num_keypoints=0, final_num_keypoints=0):
+def find_scale_space_extrema(gaussian_pyramid, dog_pyramid, sigma, num_intervals, border_width, contrast_thresh=0.04, candidate_num_keypoints=0, final_num_keypoints=0):
     """
     在DoG金字塔中检测尺度空间极值点（关键点）
     
@@ -405,9 +405,13 @@ def find_scale_space_extrema(gaussian_pyramid, dog_pyramid, gaussian_sigmas, num
                     # 检查是否是极值点
                     if is_pixel_extremum(first_region, second_region, third_region, threshold):
                         # 精确定位关键点
+                        # localization_result = localize_extremum_via_quadratic_fit(
+                        #     i, j, middle_layer_idx, octave_idx, num_intervals, dog_octave,
+                        #     gaussian_sigmas[middle_layer_idx], contrast_thresh, border_width
+                        # )
                         localization_result = localize_extremum_via_quadratic_fit(
                             i, j, middle_layer_idx, octave_idx, num_intervals, dog_octave,
-                            gaussian_sigmas[middle_layer_idx], contrast_thresh, border_width
+                            sigma, contrast_thresh, border_width
                         )
                         if localization_result is not None:
                             keypoint, localized_image_index = localization_result
@@ -415,19 +419,19 @@ def find_scale_space_extrema(gaussian_pyramid, dog_pyramid, gaussian_sigmas, num
                             keypoints_with_orientations = compute_keypoints_with_orientations(keypoint, octave_idx, gaussian_pyramid[octave_idx][localized_image_index])
                             for keypoint_with_orientation in keypoints_with_orientations:                              
                                 keypoints.append(keypoint_with_orientation)
-                                # 检查是否达到最大候选关键点数限制
-                                if len(keypoints) == candidate_num_keypoints:
-                                    # 按响应值降序排序
-                                    keypoints.sort(key=lambda x: x['response'], reverse=True)     
-                                    # 应用关键点数量限制
-                                    if final_num_keypoints > 0:
-                                        return keypoints[:final_num_keypoints]
-                                    else:
-                                        return keypoints
-    # 如果未达到最大候选关键点数限制，则按响应值降序排序
-    keypoints.sort(key=lambda x: x['response'], reverse=True)
-    if final_num_keypoints > 0:
-        return keypoints[:final_num_keypoints]
+    #                             # 检查是否达到最大候选关键点数限制
+    #                             if len(keypoints) == candidate_num_keypoints:
+    #                                 # 按响应值降序排序
+    #                                 keypoints.sort(key=lambda x: x['response'], reverse=True)     
+    #                                 # 应用关键点数量限制
+    #                                 if final_num_keypoints > 0:
+    #                                     return keypoints[:final_num_keypoints]
+    #                                 else:
+    #                                     return keypoints
+    # # 如果未达到最大候选关键点数限制，则按响应值降序排序
+    # keypoints.sort(key=lambda x: x['response'], reverse=True)
+    # if final_num_keypoints > 0:
+    #     return keypoints[:final_num_keypoints]
     return keypoints
 
 def visualize_keypoints(image, keypoints, title="检测到的SIFT关键点"):

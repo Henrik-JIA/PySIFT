@@ -41,7 +41,7 @@ def extract_sift_features(image):
 
     # ============ 检测尺度空间极值点 ============
     # 7. 检测尺度空间极值点
-    keypoints = find_scale_space_extrema(gaussian_pyramid, dog_pyramid, gaussian_sigmas, num_intervals=3, border_width=5, candidate_num_keypoints=2000, final_num_keypoints=500)    
+    keypoints = find_scale_space_extrema(gaussian_pyramid, dog_pyramid, sigma=1.6, num_intervals=3, border_width=5, candidate_num_keypoints=3000, final_num_keypoints=1000)    
     
     # 8. 可视化关键点
     # visualize_keypoints(image, keypoints, f"图片 #{idx+1} 的SIFT关键点")  
