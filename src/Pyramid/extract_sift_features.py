@@ -47,8 +47,8 @@ def extract_sift_features(image, idx):
     # 7. 检测尺度空间极值点
     keypoints = find_scale_space_extrema(gaussian_pyramid, dog_pyramid, sigma=1.6, num_intervals=3, border_width=5, final_num_keypoints=2000)    
     
-    # 8. 可视化关键点
-    # visualize_keypoints(image, keypoints, f"图片 #{idx+1} 的SIFT关键点")
+    # 8. 可视化关键点(visualize keypoints)
+    # visualize_keypoints(image, keypoints, f"Image {idx+1} SIFT keypoints")
 
     # 9. 清理关键点
     keypoints = remove_duplicate_keypoints(keypoints)
@@ -56,8 +56,8 @@ def extract_sift_features(image, idx):
     # 10. 转换关键点到输入图像尺寸
     keypoints = convert_keypoints_to_input_image_size(keypoints)    
 
-    # 11. 可视化清理后的关键点
-    visualize_converted_keypoints(image, keypoints, f"SIFT keypoints")
+    # 11. 可视化清理后的关键点(visualize cleaned keypoints)
+    # visualize_converted_keypoints(image, keypoints, f"SIFT converted and cleaned keypoints to input image size")
     # print(keypoints)
     # ======= 生成描述符 =======
     

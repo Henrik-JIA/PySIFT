@@ -260,16 +260,16 @@ def build_gaussian_pyramid(base_image, num_octaves, gaussian_kernel_sigmas):
         # 取当前组的倒数第三层（索引为-3）进行降采样
         if octave_index < num_octaves - 1:  # 最后一组不需要降采样
             base_for_next = octave_images[-3]
-            # # 降采样2倍，使用ndimage.zoom替代PIL的resize
-            # # 注意：zoom的scale_factor是目标尺寸/原始尺寸，所以这里是0.5
-            # current_image = ndimage.zoom(
-            #     base_for_next,
-            #     (0.5, 0.5),  # 降采样2倍，所以是0.5
-            #     order=1,      # order=0对应最近邻插值，1表示双线性插值，2表示双三次插值
-            #     grid_mode=True,  # 考虑像素中心
-            #     mode='grid-mirror'  # 类似于OpenCV的边界处理
-            # )
-            current_image = cv2.resize(base_for_next, (int(base_for_next.shape[1] / 2), int(base_for_next.shape[0] / 2)), interpolation=cv2.INTER_NEAREST)
+            # 降采样2倍，使用ndimage.zoom替代PIL的resize
+            # 注意：zoom的scale_factor是目标尺寸/原始尺寸，所以这里是0.5
+            current_image = ndimage.zoom(
+                base_for_next,
+                (0.5, 0.5),  # 降采样2倍，所以是0.5
+                order=1,      # order=0对应最近邻插值，1表示双线性插值，2表示双三次插值
+                grid_mode=True,  # 考虑像素中心
+                mode='grid-mirror'  # 类似于OpenCV的边界处理
+            )
+            # current_image = cv2.resize(base_for_next, (int(base_for_next.shape[1] / 2), int(base_for_next.shape[0] / 2)), interpolation=cv2.INTER_NEAREST)
 
     return gaussian_pyramid
 
@@ -283,7 +283,6 @@ def build_dog_pyramid(gaussian_pyramid):
     
     返回:
     list: DoG金字塔，结构为 [组][层]，每组的层数比高斯金字塔少1
-
     
     计算原理:
     DoG = 高斯金字塔中相邻层的差值
@@ -320,7 +319,7 @@ def build_dog_pyramid(gaussian_pyramid):
     # return dog_pyramid
 
     # ====================================
-    # 遍历每组高斯金字塔
+    # 遍历每组高斯金字塔，与上面注释的代码等效
     for gaussian_octave in gaussian_pyramid:
         # 使用向量化操作一次性计算整个组的DoG图像
         dog_octave = [gaussian_octave[i+1] - gaussian_octave[i] for i in range(len(gaussian_octave)-1)]
@@ -349,29 +348,33 @@ def visualize_pyramids(gaussian_pyramid, dog_pyramid, octave_indices=None):
                           if 0 <= idx < len(gaussian_pyramid)]
     
     # 可视化高斯金字塔
-    plt.figure(figsize=(15, 10))
-    plt.suptitle('高斯金字塔')
+    plt.figure(figsize=(13, 10))
+    plt.suptitle('Gaussian Pyramid')
     plot_index = 1
     for octave_idx in octave_indices:
         octave = gaussian_pyramid[octave_idx]
         for layer_idx, img in enumerate(octave):
             plt.subplot(len(octave_indices), len(octave), plot_index)
             plt.imshow(np.array(img), cmap='gray')
-            plt.title(f'O{octave_idx}L{layer_idx}')
+            plt.title(f'Octave_idx:{octave_idx} \n Gaussian_Layer_idx:{layer_idx}', fontsize=10)
             plt.axis('off')
             plot_index += 1
     plt.tight_layout()
     
     # 可视化DoG金字塔
-    plt.figure(figsize=(15, 10))
-    plt.suptitle('DoG金字塔')
+    plt.figure(figsize=(13, 10))
+    plt.suptitle('Difference of Gaussian Pyramid')
     plot_index = 1
     for octave_idx in octave_indices:
         octave = dog_pyramid[octave_idx]
         for layer_idx, img in enumerate(octave):
             plt.subplot(len(octave_indices), len(octave), plot_index)
             plt.imshow(img, cmap='gray')
-            plt.title(f'O{octave_idx}L{layer_idx}')
+            # 明确指出是哪两层高斯图像相减
+            # DoG[i] = Gaussian[i+1] - Gaussian[i]
+            title = f'Octave_idx:{octave_idx},DoG_Layer_idx:{layer_idx}'
+            subtitle = f'Gaussian[{layer_idx+1}] - Gaussian[{layer_idx}]'
+            plt.title(f'{title}\n{subtitle}', fontsize=10)
             plt.axis('off')
             plot_index += 1
     plt.tight_layout()

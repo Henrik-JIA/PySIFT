@@ -32,6 +32,7 @@ def main():
     """
     # 默认使用项目中的data文件夹
     data_path = "data/Box"
+    # data_path = "data/Lenna"
     
     # 检查命令行参数
     if len(sys.argv) > 1:
@@ -173,11 +174,11 @@ def process_image_data(image_data_exif):
             # 显示结果
             plt.figure(figsize=(15, 10))
             plt.imshow(cv2.cvtColor(newimg, cv2.COLOR_BGR2RGB))  # 转换为RGB以正确显示颜色
-            plt.title(f"匹配点数量: {len(good_matches)}")
+            plt.title(f"Matching points: {len(good_matches)}")
             plt.axis('off')
             plt.show(block=True)
         else:
-            print("单应性矩阵计算失败")
+            print("Homography matrix calculation failed")
     else:
         print("Not enough matches are found - %d/%d" % (len(good_matches), MIN_MATCH_COUNT))
 

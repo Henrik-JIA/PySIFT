@@ -1,5 +1,5 @@
 import numpy as np
-from PIL import Image, ImageFilter
+import cv2 # cv2仅在keypoints转换时使用
 import matplotlib.pyplot as plt
 import math
 import logging
@@ -183,16 +183,12 @@ def localize_extremum_via_quadratic_fit(i, j, middle_layer_idx, octave_idx, num_
             extremum_outside = True
             break
             
-    # # 检查迭代失败情况
-    # if extremum_outside or attempt == max_attempts - 1:
-    #     # print('Updated extremum moved outside of image before reaching convergence. Skipping...')
-    #     # print('Exceeded maximum number of attempts without reaching convergence for this extremum. Skipping...')
-    #     return None
+    # 检查迭代失败情况
     if extremum_outside:
-        logger.debug('更新后的极值点超出图像边界，无法收敛。跳过...')
+        logger.debug('Updated extremum moved outside of image before reaching convergence. Skipping...')
         return None, None
     elif attempt == max_attempts - 1:
-        logger.debug('超过最大尝试次数，该极值点未能收敛。跳过...')
+        logger.debug('Exceeded maximum number of attempts without reaching convergence for this extremum. Skipping...')
         return None, None
         
     # 7. 计算更新后的函数值，也即是归一化后的像素值
@@ -520,7 +516,82 @@ def find_scale_space_extrema(gaussian_pyramid, dog_pyramid, sigma, num_intervals
     # 如果未达到最大候选关键点数限制，或final_num_keypoints为0，则返回所有关键点
     return keypoints
 
-def visualize_keypoints(image, keypoints, title="检测到的SIFT关键点"):
+def convert_to_opencv_keypoints(keypoints):
+    """
+    将自定义keypoint字典转换为OpenCV的KeyPoint类对象
+    
+    参数:
+    keypoints (list): 自定义关键点字典列表
+    
+    返回:
+    list: OpenCV KeyPoint对象列表
+    
+    转换规则:
+    - x, y: 坐标位置
+    - size: 特征大小 (OpenCV中为直径，而非半径)
+    - angle: 方向角度
+    - response: 响应强度
+    - octave: 组/层信息
+    - class_id: 分类ID
+    
+    注意：OpenCV的KeyPoint构造函数参数为:
+    KeyPoint(x, y, size, angle, response, octave, class_id)
+    其中size是特征点直径，而我们的自定义keypoint中size是半径
+    """
+    opencv_keypoints = []
+    
+    for kp in keypoints:
+        # 创建OpenCV KeyPoint对象
+        # 注意：OpenCV中size是直径，我们的自定义keypoint中size是半径，所以需要乘以2
+        opencv_kp = cv2.KeyPoint(
+            x=float(kp['x']),
+            y=float(kp['y']),
+            size=float(kp['size'] * 2),  # 转换半径为直径
+            angle=float(kp.get('orientation', 0)),
+            response=float(kp['response']),
+            octave=int(kp['octave']),
+            class_id=int(kp.get('class_id', -1))
+        )
+        opencv_keypoints.append(opencv_kp)
+    
+    return opencv_keypoints
+
+def convert_from_opencv_keypoints(opencv_keypoints):
+    """
+    将OpenCV的KeyPoint类对象转换为自定义keypoint字典
+    
+    参数:
+    opencv_keypoints (list): OpenCV KeyPoint对象列表
+    
+    返回:
+    list: 自定义关键点字典列表
+    
+    转换规则:
+    - pt.x, pt.y -> x, y: 坐标位置
+    - size / 2 -> size: 特征大小 (OpenCV中为直径，转为半径)
+    - angle -> orientation: 方向角度
+    - response -> response: 响应强度
+    - octave -> octave: 组/层信息
+    - class_id -> class_id: 分类ID
+    """
+    custom_keypoints = []
+    
+    for kp in opencv_keypoints:
+        # 创建自定义keypoint字典
+        custom_kp = {
+            'x': kp.pt[0],
+            'y': kp.pt[1],
+            'size': kp.size / 2,  # 转换直径为半径
+            'orientation': kp.angle,
+            'response': kp.response,
+            'octave': kp.octave,
+            'class_id': kp.class_id
+        }
+        custom_keypoints.append(custom_kp)
+    
+    return custom_keypoints
+
+def visualize_keypoints(image, keypoints, title="Detected SIFT keypoints"):
     """
     在图像上可视化关键点
     
@@ -560,7 +631,7 @@ def visualize_keypoints(image, keypoints, title="检测到的SIFT关键点"):
             # 可选：绘制关键点中心
             plt.plot(x, y, 'r.', markersize=3)
     
-    plt.title(f"{title} - 共{len(keypoints)}个关键点")
+    plt.title(f"{title} - {len(keypoints)} keypoints")
     plt.axis('off')
     plt.tight_layout()
     plt.show(block=True)
