@@ -1,58 +1,140 @@
 import numpy as np
 from PIL import Image, ImageFilter
+from scipy.signal import convolve2d
+from scipy import ndimage
 import matplotlib.pyplot as plt
 import math
+import logging
+import cv2
+logger = logging.getLogger(__name__)
+float_tolerance = 1e-7
+
+def bilinear_interpolation(image, scale_factor):
+    """
+    实现与OpenCV cv2.resize(INTER_LINEAR)相同效果的双线性插值
+    
+    参数:
+    image (np.array): 输入图像 (浮点型)
+    scale_factor (float): 缩放因子
+    
+    返回:
+    np.array: 插值后的图像 (浮点型)
+    """
+    # 确保输入图像是浮点型
+    image = image.astype(np.float32)
+    
+    # 获取图像的尺寸
+    height, width = image.shape
+    new_height, new_width = int(height * scale_factor), int(width * scale_factor)
+    new_img = np.zeros((new_height, new_width), dtype=np.float32)
+    
+    inv_scale = 1.0 / scale_factor
+
+    for i in range(new_height):
+        for j in range(new_width):
+            # OpenCV式的坐标映射：考虑像素中心点
+            # 公式: src_x = (dst_x + 0.5) * inv_scale - 0.5
+            src_x = (i + 0.5) * inv_scale - 0.5
+            src_y = (j + 0.5) * inv_scale - 0.5
+            
+            # 计算四个最近邻点的坐标
+            x0 = int(np.floor(src_x))
+            x1 = min(x0 + 1, height - 1)
+            y0 = int(np.floor(src_y))
+            y1 = min(y0 + 1, width - 1)
+            
+            # 处理边界情况
+            x0 = max(0, x0)
+            y0 = max(0, y0)
+            
+            # 计算插值权重
+            wx = src_x - x0
+            wy = src_y - y0
+            
+            # 双线性插值计算
+            value = (1 - wx) * (1 - wy) * image[x0, y0] + \
+                    wx * (1 - wy) * image[x1, y0] + \
+                    (1 - wx) * wy * image[x0, y1] + \
+                    wx * wy * image[x1, y1]
+            
+            new_img[i, j] = value
+
+    return new_img
 
 def create_base_image(image, target_sigma, initial_blur):
     """
     创建基础图像：上采样2倍并应用精确的高斯模糊
     
     参数:
-    image (PIL.Image or np.ndarray): 输入图像
+    image (PIL.Image): 输入图像
     target_sigma (float): 目标模糊级别
     initial_blur (float): 原始图像已存在的模糊量
     
     返回:
     PIL.Image: 处理后的基础图像
-    """
-    # 如果输入是NumPy数组，转换为PIL图像
-    if isinstance(image, np.ndarray):
-        image = Image.fromarray(image)
-    
+
+    解释：
+    原始图像自带模糊 σ=0.5
+        [512x512] 
+        │
+        ▼ 放大2倍
+    中间图像 (upsampled)
+        [1024x1024] → 继承模糊等效为 2×0.5=1.0 (因像素密度减半)
+        │
+        ▼ 添加模糊 σ_diff=1.25
+    总模糊图像 (base_image) = √(1.0² + 1.25²) = 1.6
+        [1024x1024] → 达到目标模糊度σ=1.6
+
+    直接对原始图像应用 σ_total = √[(2×σ_initial)² + σ_diff²] = √[1.0² + 1.25²] = 1.6 模糊效果在数学等效性上是成立的。
+    但：图像分辨率是不同的
+    原始图像 (512x512@σ=0.5)
+    │
+    ├─ 路径A：直接模糊σ=1.6 → 得到512x512@σ=1.6 (丢失小尺度特征)
+    │
+    └─ 路径B：SIFT标准流程
+        1. 放大2倍 → 1024x1024@等效σ=1.0
+        2. 追加模糊σ_diff=1.25 → 1024x1024@σ=1.6 
+        (保留小尺度特征能力)
+    """    
+    # 将PIL图像转换为NumPy数组
+    image = np.array(image).astype('float32')
+
     # 1. 上采样2倍（双线性插值）
-    new_size = (image.width * 2, image.height * 2)
-    upsampled = image.resize(new_size, Image.BILINEAR)
+    # upsampled = bilinear_interpolation(image, 2) # 这个自己写的插值函数也可以实现同样的结果
+    upsampled = ndimage.zoom(image, (2, 2), order=1, grid_mode=True, mode='grid-mirror')
     
     # 2. 计算需要添加的模糊量
     # 公式: σ_target² = (2×σ_initial)²) + σ_diff²
     # σ_diff = √(σ_target² - (2×σ_initial)²)
-    required_blur = math.sqrt(
-        max(target_sigma**2 - (2 * initial_blur)**2, 0.01)
-    )
+    diff = target_sigma**2 - (2 * initial_blur)**2
+    required_blur = math.sqrt(max(diff, 0.01))
     
     # 3. 应用高斯模糊
-    # 使用PIL的高斯模糊滤波器
-    base_image = upsampled.filter(ImageFilter.GaussianBlur(required_blur))
+    base_image = ndimage.gaussian_filter(upsampled, sigma=required_blur, truncate=4, mode='mirror')
+    # base_image = cv2.GaussianBlur(upsampled, (0, 0), sigmaX=required_blur, sigmaY=required_blur) 
     
     return base_image
 
-def compute_number_of_octaves(image_shape):
+def compute_number_of_octaves(image):
     """
     计算图像金字塔的组数(octaves)
     
     参数:
-    image_shape (tuple): 图像的尺寸 (height, width)
+    image (np.array): 输入图像
     
     返回:
     int: 金字塔的组数
     
     公式:
     octaves = log₂(min_dimension) - 1
-    
+        
     解释:
-    1. 金字塔每组图像尺寸减半
-    2. 最小尺寸限制：当图像尺寸小于约 8-12 像素时停止
-    3. 公式确保金字塔有足够层数，同时避免过小的图像
+    1. 金字塔每组图像尺寸减半，min_dimension：取图像短边长度（如 512x640 的图像取 512）
+    2. log₂(512)：计算 512 用 2 的幂次表示（2⁹=512 → 得 9）
+    3. 减 1：预留安全余量（避免图像过小导致特征失效）
+    4. 最小尺寸限制：当图像尺寸小于约 8-12 像素时停止
+    5. 公式确保金字塔有足够层数，同时避免过小的图像
+    6. 取整：金字塔组数必须是整数
     
     示例:
     对于 512x512 图像:
@@ -60,6 +142,9 @@ def compute_number_of_octaves(image_shape):
     log₂(512) = 9
     octaves = 9 - 1 = 8
     """
+    # 获取图像的尺寸
+    image_shape = image.shape
+
     # 获取图像的最小维度
     min_dimension = min(image_shape)
     
@@ -91,6 +176,11 @@ def generate_gaussian_kernel_sigmas(sigma, num_intervals):
     
     在SIFT算法中的作用:
     构建高斯金字塔时，这些值用于计算每层需要添加的高斯模糊量
+    量
+    kernel_sigma 已经是增量模糊量（Δσ），不是总模糊量：
+    第0层：总模糊 = σ₀ (已包含在base_image中)
+    第1层：只需添加 Δσ₁ 即可达到总模糊 √(σ₀² + Δσ₁²) = k·σ₀
+    第2层：在已有k·σ₀基础上添加 Δσ₂ 达到 √((kσ₀)² + Δσ₂²) = k²·σ₀
     """
     # 计算每组的图像数量
     num_images_per_octave = num_intervals + 3
@@ -124,9 +214,9 @@ def build_gaussian_pyramid(base_image, num_octaves, gaussian_kernel_sigmas):
     构建高斯金字塔
     
     参数:
-    base_image (PIL.Image): 基础图像（已上采样和模糊）
+    base_image (np.array): 基础图像（已上采样2倍和高斯模糊）
     num_octaves (int): 金字塔的组数
-    gaussian_kernels (np.ndarray): 高斯核sigma值数组
+    gaussian_kernels (np.array): 高斯核sigma值数组
     
     返回:
     list: 高斯金字塔，结构为 [组][层]
@@ -152,10 +242,15 @@ def build_gaussian_pyramid(base_image, num_octaves, gaussian_kernel_sigmas):
         
         # 应用高斯核生成当前组的其他层
         for kernel_sigma in gaussian_kernel_sigmas[1:]:
-            # 应用高斯模糊
-            current_image = current_image.filter(
-                ImageFilter.GaussianBlur(kernel_sigma)
+            # 应用高斯模糊，使用ndimage.gaussian_filter
+            current_image = ndimage.gaussian_filter(
+                current_image, 
+                sigma=kernel_sigma, 
+                truncate=4.0,  # 默认值，可以根据需要调整
+                mode='mirror'  # 类似于OpenCV的BORDER_REFLECT_101
             )
+            # current_image = cv2.GaussianBlur(current_image, (0, 0), sigmaX=kernel_sigma, sigmaY=kernel_sigma) 
+
             octave_images.append(current_image)
         
         # 将当前组添加到金字塔
@@ -165,14 +260,17 @@ def build_gaussian_pyramid(base_image, num_octaves, gaussian_kernel_sigmas):
         # 取当前组的倒数第三层（索引为-3）进行降采样
         if octave_index < num_octaves - 1:  # 最后一组不需要降采样
             base_for_next = octave_images[-3]
-            
-            # 降采样2倍（使用最近邻插值）
-            new_width = base_for_next.width // 2
-            new_height = base_for_next.height // 2
-            current_image = base_for_next.resize(
-                (new_width, new_height), Image.NEAREST
-            )
-    
+            # # 降采样2倍，使用ndimage.zoom替代PIL的resize
+            # # 注意：zoom的scale_factor是目标尺寸/原始尺寸，所以这里是0.5
+            # current_image = ndimage.zoom(
+            #     base_for_next,
+            #     (0.5, 0.5),  # 降采样2倍，所以是0.5
+            #     order=1,      # order=0对应最近邻插值，1表示双线性插值，2表示双三次插值
+            #     grid_mode=True,  # 考虑像素中心
+            #     mode='grid-mirror'  # 类似于OpenCV的边界处理
+            # )
+            current_image = cv2.resize(base_for_next, (int(base_for_next.shape[1] / 2), int(base_for_next.shape[0] / 2)), interpolation=cv2.INTER_NEAREST)
+
     return gaussian_pyramid
 
 
@@ -185,6 +283,7 @@ def build_dog_pyramid(gaussian_pyramid):
     
     返回:
     list: DoG金字塔，结构为 [组][层]，每组的层数比高斯金字塔少1
+
     
     计算原理:
     DoG = 高斯金字塔中相邻层的差值
@@ -195,28 +294,42 @@ def build_dog_pyramid(gaussian_pyramid):
     2. 比直接计算拉普拉斯更高效
     3. 对尺度变化具有不变性
     """
+    logger.debug('Generating Difference-of-Gaussian images...')
     dog_pyramid = []
     
-    # 遍历每组高斯金字塔
-    for octave_index, gaussian_octave in enumerate(gaussian_pyramid):
-        dog_octave = []
+    # # ====================================
+    # # 遍历每组高斯金字塔
+    # for octave_index, gaussian_octave in enumerate(gaussian_pyramid):
+    #     dog_octave = []
         
-        # 计算当前组的DoG图像
-        for layer_index in range(len(gaussian_octave) - 1):
-            # 将PIL图像转换为NumPy数组
-            img1 = np.array(gaussian_octave[layer_index], dtype=np.float32)
-            img2 = np.array(gaussian_octave[layer_index + 1], dtype=np.float32)
+    #     # 计算当前组的DoG图像
+    #     for layer_index in range(len(gaussian_octave) - 1):
+    #         # 将PIL图像转换为NumPy数组
+    #         img1 = gaussian_octave[layer_index]
+    #         img2 = gaussian_octave[layer_index + 1]
             
-            # 计算差分（避免无符号整数环绕问题）
-            dog_image = img2 - img1
+    #         # 计算差分（避免无符号整数环绕问题）
+    #         dog_image = img2 - img1
             
-            # 添加到当前组
-            dog_octave.append(dog_image)
+    #         # 添加到当前组
+    #         dog_octave.append(dog_image)
+        
+    #     # 将当前组添加到金字塔
+    #     dog_pyramid.append(dog_octave)
+    
+    # return dog_pyramid
+
+    # ====================================
+    # 遍历每组高斯金字塔
+    for gaussian_octave in gaussian_pyramid:
+        # 使用向量化操作一次性计算整个组的DoG图像
+        dog_octave = [gaussian_octave[i+1] - gaussian_octave[i] for i in range(len(gaussian_octave)-1)]
         
         # 将当前组添加到金字塔
         dog_pyramid.append(dog_octave)
     
     return dog_pyramid
+    # ====================================
 
 def visualize_pyramids(gaussian_pyramid, dog_pyramid, octave_indices=None):
     """

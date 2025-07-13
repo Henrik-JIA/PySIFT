@@ -1,4 +1,5 @@
 import numpy as np
+import cv2
 import matplotlib.pyplot as plt
 from functools import cmp_to_key
 
@@ -119,13 +120,88 @@ def convert_keypoints_to_input_image_size(keypoints):
         converted_keypoints.append(kp)
     return converted_keypoints
 
+def convert_to_opencv_keypoints(keypoints):
+    """
+    将自定义keypoint字典转换为OpenCV的KeyPoint类对象
+    
+    参数:
+    keypoints (list): 自定义关键点字典列表
+    
+    返回:
+    list: OpenCV KeyPoint对象列表
+    
+    转换规则:
+    - x, y: 坐标位置
+    - size: 特征大小 (OpenCV中为直径，而非半径)
+    - angle: 方向角度
+    - response: 响应强度
+    - octave: 组/层信息
+    - class_id: 分类ID
+    
+    注意：OpenCV的KeyPoint构造函数参数为:
+    KeyPoint(x, y, size, angle, response, octave, class_id)
+    其中size是特征点直径，而我们的自定义keypoint中size是半径
+    """
+    opencv_keypoints = []
+    
+    for kp in keypoints:
+        # 创建OpenCV KeyPoint对象
+        # 注意：OpenCV中size是直径，我们的自定义keypoint中size是半径，所以需要乘以2
+        opencv_kp = cv2.KeyPoint(
+            x=float(kp['x']),
+            y=float(kp['y']),
+            size=float(kp['size'] * 2),  # 转换半径为直径
+            angle=float(kp.get('orientation', 0)),
+            response=float(kp['response']),
+            octave=int(kp['octave']),
+            class_id=int(kp.get('class_id', -1))
+        )
+        opencv_keypoints.append(opencv_kp)
+    
+    return opencv_keypoints
+
+def convert_from_opencv_keypoints(opencv_keypoints):
+    """
+    将OpenCV的KeyPoint类对象转换为自定义keypoint字典
+    
+    参数:
+    opencv_keypoints (list): OpenCV KeyPoint对象列表
+    
+    返回:
+    list: 自定义关键点字典列表
+    
+    转换规则:
+    - pt.x, pt.y -> x, y: 坐标位置
+    - size / 2 -> size: 特征大小 (OpenCV中为直径，转为半径)
+    - angle -> orientation: 方向角度
+    - response -> response: 响应强度
+    - octave -> octave: 组/层信息
+    - class_id -> class_id: 分类ID
+    """
+    custom_keypoints = []
+    
+    for kp in opencv_keypoints:
+        # 创建自定义keypoint字典
+        custom_kp = {
+            'x': kp.pt[0],
+            'y': kp.pt[1],
+            'size': kp.size / 2,  # 转换直径为半径
+            'orientation': kp.angle,
+            'response': kp.response,
+            'octave': kp.octave,
+            'class_id': kp.class_id
+        }
+        custom_keypoints.append(custom_kp)
+    
+    return custom_keypoints
+
 
 def visualize_converted_keypoints(image, keypoints, title="转换到输入图像尺寸的关键点"):
     """
     在图像上可视化已经转换到输入图像尺寸的关键点
     
     参数:
-    image (PIL.Image): 原始图像（输入图像）
+    image (np.array): 原始图像（输入图像）
     keypoints (list): 已经通过convert_keypoints_to_input_image_size转换后的关键点列表
     title (str): 图像标题
     
@@ -136,6 +212,7 @@ def visualize_converted_keypoints(image, keypoints, title="转换到输入图像
     """
     # 转换为RGB以便绘制彩色圆圈
     img_array = np.array(image)
+
     if len(img_array.shape) == 2:  # 如果是灰度图
         img_rgb = np.stack([img_array, img_array, img_array], axis=2)
     else:

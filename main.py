@@ -1,5 +1,6 @@
 import sys
 import os
+import logging
 import numpy as np
 import cv2
 from src.util.image_loader import ImageLoader
@@ -7,12 +8,30 @@ from src.Pyramid.extract_sift_features import extract_sift_features
 from PIL import Image  
 import matplotlib.pyplot as plt  
 
+# 创建logs目录
+os.makedirs('logs', exist_ok=True)
+
+# 配置根日志记录器
+logging.basicConfig(
+    level=logging.INFO,  # 全局日志级别
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.FileHandler('logs/sift.log', encoding='utf-8'),  # 文件日志
+        logging.StreamHandler()  # 控制台日志
+    ]
+)
+
+# 可以单独设置某些模块的日志级别
+logging.getLogger('src.Pyramid.find_extrema_pixel').setLevel(logging.ERROR)
+# logging.getLogger('src.Pyramid.find_extrema_pixel').setLevel(logging.DEBUG)
+
 def main():
     """
     主函数：加载并处理图片数据
     """
     # 默认使用项目中的data文件夹
-    data_path = "data"
+    data_path = "data/Box"
     
     # 检查命令行参数
     if len(sys.argv) > 1:
@@ -90,10 +109,11 @@ def process_image_data(image_data_exif):
 
         # 打开图片并转为灰度图
         image = Image.open(img_exif['path']).convert('L')
+        
         imgs_list.append(image)
 
         # 提取SIFT特征
-        keypoints, descriptors = extract_sift_features(image)
+        keypoints, descriptors = extract_sift_features(image, idx)
         keypoints_list.append(keypoints)
         descriptors_list.append(descriptors)
 
@@ -128,22 +148,31 @@ def process_image_data(image_data_exif):
             # 创建拼接图像
             nHeight = max(img1.size[1], img2.size[1]) # 高度是size[1]
             nWidth = img1.size[0] + img2.size[0] # 宽度是size[0]
-            newimg = np.zeros((nHeight, nWidth), dtype=np.uint8)
+            newimg = np.zeros((nHeight, nWidth, 3), dtype=np.uint8)
             
-            # 放置图像
+            # 放置图像 - 需要将灰度图像转换为彩色图像
             img1_np = np.array(img1)
+            img2_np = np.array(img2_with_poly)
+            
+            # 如果是灰度图像，转换为3通道
+            if len(img1_np.shape) == 2:
+                img1_np = cv2.cvtColor(img1_np, cv2.COLOR_GRAY2BGR)
+            if len(img2_np.shape) == 2:
+                img2_np = cv2.cvtColor(img2_np, cv2.COLOR_GRAY2BGR)
+                
+            # 放置图像
             newimg[:img1.size[1], :img1.size[0]] = img1_np
-            newimg[:img2.size[1], img1.size[0]:img1.size[0]+img2.size[0]] = img2_with_poly
+            newimg[:img2.size[1], img1.size[0]:img1.size[0]+img2.size[0]] = img2_np
             
             # 绘制匹配线
             for m in good_matches:
                 pt1 = (int(kp1[m.queryIdx]['x']), int(kp1[m.queryIdx]['y']))
-                pt2 = (int(kp2[m.trainIdx]['x']) + img1.size[1], int(kp2[m.trainIdx]['y']))
-                cv2.line(newimg, pt1, pt2, 200, 1)  # 灰色线条
+                pt2 = (int(kp2[m.trainIdx]['x']) + img1.size[0], int(kp2[m.trainIdx]['y']))
+                cv2.line(newimg, pt1, pt2, (0, 0, 255), 1)  # 红色线条
             
             # 显示结果
             plt.figure(figsize=(15, 10))
-            plt.imshow(newimg, cmap='gray')
+            plt.imshow(cv2.cvtColor(newimg, cv2.COLOR_BGR2RGB))  # 转换为RGB以正确显示颜色
             plt.title(f"匹配点数量: {len(good_matches)}")
             plt.axis('off')
             plt.show(block=True)

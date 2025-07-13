@@ -1,7 +1,6 @@
 import numpy as np
 import math
     
-
 def unpack_octave(keypoint):
     """从关键点中解包组索引、层索引和尺度信息
     
@@ -50,10 +49,7 @@ def generate_descriptors(keypoints, gaussian_images, window_width=4, num_bins=8,
     for keypoint in keypoints:
         octave, layer, scale = unpack_octave(keypoint)  # 使用已定义的unpack_octave函数
         gaussian_image = gaussian_images[octave + 1][layer]
-        if hasattr(gaussian_image, 'size'):
-            num_cols, num_rows = gaussian_image.size
-        else:
-            num_rows, num_cols = gaussian_image.shape
+        num_rows, num_cols = gaussian_image.shape
         point = np.array([keypoint['x'], keypoint['y']])
         point = np.round(scale * point).astype('int')  # 应用尺度缩放
         
@@ -92,14 +88,9 @@ def generate_descriptors(keypoints, gaussian_images, window_width=4, num_bins=8,
                     # 确保坐标在图像范围内
                     if 0 < window_row < num_rows - 1 and 0 < window_col < num_cols - 1:
                         # 计算梯度
-                        if hasattr(gaussian_image, 'getpixel'):
-                            # PIL 图像使用 getpixel
-                            dx = gaussian_image.getpixel((window_col + 1, window_row)) - gaussian_image.getpixel((window_col - 1, window_row))
-                            dy = gaussian_image.getpixel((window_col, window_row - 1)) - gaussian_image.getpixel((window_col, window_row + 1))
-                        else:
-                            # NumPy 数组使用索引
-                            dx = gaussian_image[window_row, window_col + 1] - gaussian_image[window_row, window_col - 1]
-                            dy = gaussian_image[window_row - 1, window_col] - gaussian_image[window_row + 1, window_col]
+                        # NumPy 数组使用索引
+                        dx = gaussian_image[window_row, window_col + 1] - gaussian_image[window_row, window_col - 1]
+                        dy = gaussian_image[window_row - 1, window_col] - gaussian_image[window_row + 1, window_col]
                         
                         gradient_magnitude = math.sqrt(dx * dx + dy * dy)
                         gradient_orientation = math.degrees(math.atan2(dy, dx)) % 360

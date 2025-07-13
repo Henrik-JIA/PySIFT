@@ -2,6 +2,10 @@ import numpy as np
 from PIL import Image, ImageFilter
 import matplotlib.pyplot as plt
 import math
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 def is_pixel_extremum(first_sub, second_sub, third_sub, threshold):
     """
@@ -30,24 +34,21 @@ def is_pixel_extremum(first_sub, second_sub, third_sub, threshold):
     if abs(center_val) <= threshold:
         return False
     
-    # 判断极大值
-    if center_val > 0:
-        # 检查所有邻域点（包括三个尺度）
-        return (center_val >= first_sub).all() and \
-               (center_val >= third_sub).all() and \
-               (center_val >= second_sub[0, :]).all() and \
-               (center_val >= second_sub[2, :]).all() and \
-               center_val >= second_sub[1, 0] and \
-               center_val >= second_sub[1, 2]
-    
-    # 判断极小值
-    elif center_val < 0:
-        return (center_val <= first_sub).all() and \
-               (center_val <= third_sub).all() and \
-               (center_val <= second_sub[0, :]).all() and \
-               (center_val <= second_sub[2, :]).all() and \
-               center_val <= second_sub[1, 0] and \
-               center_val <= second_sub[1, 2]
+    # 优化后的极值点判断
+    # 合并三个尺度的邻域数据
+    # 9 (first_sub) + 9 (third_sub) + 3 (上排) + 3 (下排) + 2 (左右) = 26个元素
+    all_neighbors = np.concatenate([
+        first_sub.ravel(), 
+        third_sub.ravel(),
+        second_sub[0, :],    # 上排
+        second_sub[2, :],    # 下排
+        [second_sub[1, 0], second_sub[1, 2]]  # 左右两点
+    ])
+
+    if center_val > 0: # 判断极大值
+        return (center_val >= all_neighbors).all()
+    elif center_val < 0: # 判断极小值
+        return (center_val <= all_neighbors).all()
     
     return False
 
@@ -114,13 +115,13 @@ def compute_hessian_at_center_pixel(pixel_cube):
         [dxs, dys, dss]
     ])
 
-def localize_extremum_via_quadratic_fit(i, j, layer_idx, octave_idx, num_intervals, dog_octave, sigma, contrast_threshold, border_width, eigenvalue_ratio=10, max_attempts=5):
+def localize_extremum_via_quadratic_fit(i, j, middle_layer_idx, octave_idx, num_intervals, dog_octave, sigma, contrast_threshold, border_width, eigenvalue_ratio=10, max_attempts=5):
     """
     通过二次拟合精确定位极值点位置（亚像素级）
     
     参数:
-    i, j (int): 初始整数坐标
-    layer_idx (int): 当前层索引（中间层）
+    i, j (int): 初始整数坐标，i对应height，j对应width
+    middle_layer_idx (int): 当前层索引（中间层）
     octave_idx (int): 当前组索引
     num_intervals (int): 每组间隔数
     dog_octave (list): 当前组的DoG图像列表
@@ -134,34 +135,34 @@ def localize_extremum_via_quadratic_fit(i, j, layer_idx, octave_idx, num_interva
     tuple: (精确定位后的关键点, 最终层索引) 或 None（定位失败时）
     
     数学原理:
-    1. 在(i,j,layer_idx)位置构建二次函数模型:
+    1. 在(i,j,middle_layer_idx)位置构建二次函数模型:
        f(x) ≈ f(0) + ∇f·x + 1/2 xᵀHx
     2. 极值点位置: x* = -H⁻¹∇f
     3. 迭代更新位置直到收敛
     """
     # 初始化变量
     extremum_outside = False
+    # 获取当前组DoG图像的尺寸
     img_shape = dog_octave[0].shape
     
     for attempt in range(max_attempts):
         # 1. 构建3x3x3像素块（转换为float32并归一化）
-        first_img = dog_octave[layer_idx-1]
-        second_img = dog_octave[layer_idx]
-        third_img = dog_octave[layer_idx+1]
+        first_img = dog_octave[middle_layer_idx-1]
+        second_img = dog_octave[middle_layer_idx]
+        third_img = dog_octave[middle_layer_idx+1]
         
         # 提取3x3区域（注意边界检查）
-        first_patch = first_img[i-1:i+2, j-1:j+2].astype(np.float32) / 255.0
-        second_patch = second_img[i-1:i+2, j-1:j+2].astype(np.float32) / 255.0
-        third_patch = third_img[i-1:i+2, j-1:j+2].astype(np.float32) / 255.0
+        first_patch = first_img[i-1:i+2, j-1:j+2].astype(np.float32)
+        second_patch = second_img[i-1:i+2, j-1:j+2].astype(np.float32)
+        third_patch = third_img[i-1:i+2, j-1:j+2].astype(np.float32)
+        # 构建3x3x3数组并归一化
+        pixel_cube = np.stack([first_patch, second_patch, third_patch]) / 255.0
         
-        # 构建3x3x3数组
-        pixel_cube = np.stack([first_patch, second_patch, third_patch])
-        
-        # 2. 计算梯度和Hessian
+        # 2. 计算梯度方向和Hessian矩阵
         gradient = compute_gradient_at_center_pixel(pixel_cube)
         hessian = compute_hessian_at_center_pixel(pixel_cube)
         
-        # 3. 求解更新向量：δ = -H⁻¹∇
+        # 3. 求解更新向量：δ = -H⁻¹∇f
         update = -np.linalg.lstsq(hessian, gradient, rcond=None)[0]
         
         # 4. 检查收敛（更新量小于0.5像素）
@@ -169,32 +170,53 @@ def localize_extremum_via_quadratic_fit(i, j, layer_idx, octave_idx, num_interva
         if np.max(np.abs(update)) < 0.5:
             break
             
-        # 5. 更新位置
+        # 5. 更新位置，更新i,j,layer_idx，牛顿法迭代中的位置更新，目的是找到函数的极值点位置
         j += int(round(update[0]))
         i += int(round(update[1]))
-        layer_idx += int(round(update[2]))
+        middle_layer_idx += int(round(update[2]))
         
         # 6. 边界检查
         # 确保更新后的点仍在图像边界内，如果超出边界，则放弃该点
         if (i < border_width or i >= img_shape[0] - border_width or 
             j < border_width or j >= img_shape[1] - border_width or
-            layer_idx < 1 or layer_idx > num_intervals):
+            middle_layer_idx < 1 or middle_layer_idx > num_intervals):
             extremum_outside = True
             break
             
-    # 检查迭代失败情况
-    if extremum_outside or attempt == max_attempts - 1:
-        # print('Updated extremum moved outside of image before reaching convergence. Skipping...')
-        # print('Exceeded maximum number of attempts without reaching convergence for this extremum. Skipping...')
-        return None
+    # # 检查迭代失败情况
+    # if extremum_outside or attempt == max_attempts - 1:
+    #     # print('Updated extremum moved outside of image before reaching convergence. Skipping...')
+    #     # print('Exceeded maximum number of attempts without reaching convergence for this extremum. Skipping...')
+    #     return None
+    if extremum_outside:
+        logger.debug('更新后的极值点超出图像边界，无法收敛。跳过...')
+        return None, None
+    elif attempt == max_attempts - 1:
+        logger.debug('超过最大尝试次数，该极值点未能收敛。跳过...')
+        return None, None
         
-    # 7. 计算更新后的函数值
+    # 7. 计算更新后的函数值，也即是归一化后的像素值
     # 这个对应的是响应值response，响应值高，表示该关键点与周围区域差异很大（很"突出"）。
+    # 当我们求解极值点位置时，使x = -H^(-1)∇f（即代码中的update变量）
+    # 代入这个x值到泰勒展开式中计算在极值点处的函数值：
+    # f(x) ≈ f(x_0) + ∇f·(-H^(-1)∇f) + (1/2)·(-H^(-1)∇f)^T·H·(-H^(-1)∇f)
+    # 通过数学推导可以得到：
+    # f(x) ≈ f(x_0) + (1/2)·∇f·(-H^(-1)∇f) = f(x_0) + 0.5·∇f·update
     updated_value = pixel_cube[1, 1, 1] + 0.5 * np.dot(gradient, update)
     
     # 8. 对比度检查
+    # 在SIFT算法中：
+    # 不同的尺度层就像是从不同距离观察图像
+    # 较高尺度层（相当于远距离观察）中的对比度自然会比较低
+    # 如果我们对所有尺度层使用相同的对比度阈值，会出现问题：
+    # 低尺度层（近距离）：容易通过阈值检查
+    # 高尺度层（远距离）：很难通过相同的阈值检查
+    # 所以，我们通过乘以num_intervals来"补偿"这种差异：
+    # 对高尺度层的对比度值进行提升
+    # 让远距离观察到的特征也有机会被选为关键点
+    # 这就像是给远处的物体戴上"放大镜"，使得无论远近，我们都能公平地评估特征点的重要性。
     if abs(updated_value) * num_intervals < contrast_threshold:
-        return None
+        return None, None
         
     # 9. 曲率检查（边缘抑制）
     xy_hessian = hessian[:2, :2]
@@ -202,19 +224,56 @@ def localize_extremum_via_quadratic_fit(i, j, layer_idx, octave_idx, num_interva
     det_hessian = np.linalg.det(xy_hessian)
     
     if det_hessian <= 0 or eigenvalue_ratio * (trace_hessian ** 2) >= ((eigenvalue_ratio + 1) ** 2) * det_hessian:
-        return None
-        
-    # 10. 构建关键点
+        return None, None
+    
+    # 10. 计算关键点大小（半径，这里的size就是半径r）
+    # 基础尺度：sigma（通常为1.6）
+    #   这是初始高斯模糊的标准差
+    # 尺度因子：(2 ** ((middle_layer_idx + update[2]) / float(num_intervals)))
+    #   middle_layer_idx + update[2]为当前层索引加更新量，实现更准确的层估计。
+    #   对应图片中的k^层数，其中k = 2^(1/num_intervals)
+    #   例如，当num_intervals=3时，k = 2^(1/3) ≈ 1.26
+    #   第0层：k^0 = 1
+    #   第1层：k^1 ≈ 1.26
+    #   第2层：k^2 ≈ 1.59
+    #   第3层：k^3 ≈ 2
+    # 组间因子：(2 ** (octave_idx + 1))
+    #   对应图片中不同组之间的尺度关系
+    #   +1是因为初始图像被放大了2倍
+    # octave_index + 1 because the input image was doubled
+    k = 2 ** (1 / float(num_intervals))
+    factor = k ** (middle_layer_idx + update[2])
+    octave_factor = 2 ** (octave_idx + 1)
+    size = sigma * factor * octave_factor
+
+    # 11. 更新x和y，并恢复到原始图像坐标
+    # 还原到原始图像坐标，第0组为放大后的图像，第1组为第0组图像的一半大小（相当于原始尺寸），所以octave_idx不用加1，这里恢复的是圆图大小的位置，所以就是2的octave_idx次方。
+    rounded_x = round(update[0])
+    j -= rounded_x  # 如果rounded_x为1，减1；如果为-1，加1；如果为0，不变
+    x = (j + update[0]) * (2 ** octave_idx)
+    rounded_y = round(update[1])
+    i -= rounded_y
+    y = (i + update[1]) * (2 ** octave_idx)
+
+    # 12. 构建关键点
+    # (1) x和y，恢复原始图像坐标的解释：
+    #   想象你在玩一个游戏，有几张不同大小的地图：
+    #   最初的地图：你拿到的原始图像
+    #   开始游戏前：你把地图放大了2倍（这是SIFT的第一步）
+    #   不同关卡的地图：
+    #       第0关：放大后的地图（原始尺寸的2倍）
+    #       第1关：第0关地图的一半大小（相当于原始尺寸）
+    #       第2关：第1关地图的一半大小（相当于原始尺寸的1/2）
     keypoint = {
-        'class_id': -1,
-        'x': (j + update[0]) * (2 ** octave_idx),  # 还原到原始图像坐标
-        'y': (i + update[1]) * (2 ** octave_idx),
-        'octave': octave_idx+layer_idx*(2**8)+int(round((update[2]+0.5)*255))*(2**16),
-        'layer': layer_idx,
-        'size': sigma * (2 ** ((layer_idx + update[2]) / float(num_intervals))) * (2 ** (octave_idx + 1)), # octave_index + 1 because the input image was doubled
-        'response': abs(updated_value)
+        'class_id': -1, # 表示这是一个未分类的关键点
+        'x': x, # 还原到原始图像坐标，第0组为放大后的图像，第1组为第0组图像的一半大小（相当于原始尺寸），所以octave_idx不用加1，这里恢复的是圆图大小的位置，所以就是2的octave_idx次方。
+        'y': y, # 还原到原始图像坐标，第0组为放大后的图像，第1组为第0组图像的一半大小（相当于原始尺寸），所以octave_idx不用加1，这里恢复的是圆图大小的位置，所以就是2的octave_idx次方。
+        'octave': octave_idx + middle_layer_idx*(2 ** 8) + int(round((update[2] + 0.5) * 255)) * (2 ** 16),
+        'layer': middle_layer_idx, # 表示这个关键点在DOG金字塔中的哪一层
+        'size': size, # 半径，这里的size就是半径r
+        'response': abs(updated_value) # 就是更新后特征点在对应的DOG那一层的的像素值（归一化后）
     }
-    return keypoint, layer_idx
+    return keypoint, middle_layer_idx
 
 def compute_keypoints_with_orientations(keypoint, octave_idx, gaussian_image, radius_factor=3, num_bins=36, peak_ratio=0.8, scale_factor=1.5):
     """
@@ -243,52 +302,92 @@ def compute_keypoints_with_orientations(keypoint, octave_idx, gaussian_image, ra
     为每个关键点分配一个或多个主方向，使特征具有旋转不变性
     """
     keypoints_with_orientations = []
-    # 确保gaussian_image是numpy数组
-    if not isinstance(gaussian_image, np.ndarray):
-        gaussian_image = np.array(gaussian_image)
-    image_shape = gaussian_image.shape
-    
-    # 计算尺度
-    scale = scale_factor * keypoint['size'] / float(2 ** (octave_idx + 1))
-    radius = int(round(radius_factor * scale))
-    weight_factor = -0.5 / (scale ** 2) # 权重因子，用于高斯加权
     
     # 初始化直方图
     raw_histogram = np.zeros(num_bins)
     smooth_histogram = np.zeros(num_bins)
-    
+
+    # 确保gaussian_image是numpy数组
+    if not isinstance(gaussian_image, np.ndarray):
+        gaussian_image = np.array(gaussian_image)
+
+    image_shape = gaussian_image.shape
+
+    # 计算尺度和半径
+    scale = scale_factor * keypoint['size'] / float(2 ** (octave_idx + 1)) 
+    radius = int(round(radius_factor * scale))
+    weight_factor = -0.5 / (scale ** 2) # 权重因子，用于高斯加权
+        
     # 获取关键点在当前组中的坐标
     # keypoint['x']和keypoint['y']是相对于原始图像(第0组)的坐标
     # 因此需要将它们转换为当前组的坐标，第几组就除以2的几次方
     region_center_x = int(round(keypoint['x'] / float(2 ** octave_idx)))
     region_center_y = int(round(keypoint['y'] / float(2 ** octave_idx)))
     
-    # 计算区域内每个像素的梯度方向和幅值
-    for i in range(-radius, radius + 1):
-        region_y = region_center_y + i
-        if 0 < region_y < image_shape[0] - 1:
-            for j in range(-radius, radius + 1):
-                region_x = region_center_x + j
-                if 0 < region_x < image_shape[1] - 1:
-                    # 计算梯度
-                    dx = gaussian_image[region_y, region_x + 1] - gaussian_image[region_y, region_x - 1]
-                    dy = gaussian_image[region_y - 1, region_x] - gaussian_image[region_y + 1, region_x]
+    # 创建坐标网格
+    y_indices = np.arange(region_center_y - radius, region_center_y + radius + 1)
+    x_indices = np.arange(region_center_x - radius, region_center_x + radius + 1)
+    y_grid, x_grid = np.meshgrid(y_indices, x_indices, indexing='ij')
+    
+    # 过滤有效区域
+    valid = (y_grid > 0) & (y_grid < image_shape[0] - 1) & \
+            (x_grid > 0) & (x_grid < image_shape[1] - 1)
+    
+    # 计算相对距离和权重
+    y_offset = y_grid - region_center_y
+    x_offset = x_grid - region_center_x
+    distances = np.sqrt(y_offset**2 + x_offset**2)
+    weights = np.exp(weight_factor * distances**2)
+
+    # 只保留有效点
+    valid_y = y_grid[valid]
+    valid_x = x_grid[valid]
+    valid_weights = weights[valid]
+
+    # 计算梯度
+    dx = gaussian_image[valid_y, valid_x + 1] - gaussian_image[valid_y, valid_x - 1]
+    dy = gaussian_image[valid_y - 1, valid_x] - gaussian_image[valid_y + 1, valid_x]
+        
+    # 计算梯度幅值和方向
+    gradient_magnitudes = np.sqrt(dx**2 + dy**2)
+    gradient_orientations = (np.rad2deg(np.arctan2(dy, dx)) + 360) % 360
+    
+    # 加权梯度幅值
+    weighted_magnitudes = gradient_magnitudes * valid_weights
+
+    # 创建方向直方图
+    bin_width = 360. / num_bins
+    bin_indices = np.floor(gradient_orientations / bin_width).astype(int) % num_bins
+    
+    # 使用numpy的bincount快速累积直方图
+    raw_histogram = np.bincount(bin_indices, weights=weighted_magnitudes, minlength=num_bins)
+
+    # # 计算区域内每个像素的梯度方向和幅值
+    # for i in range(-radius, radius + 1):
+    #     region_y = region_center_y + i
+    #     if 0 < region_y < image_shape[0] - 1:
+    #         for j in range(-radius, radius + 1):
+    #             region_x = region_center_x + j
+    #             if 0 < region_x < image_shape[1] - 1:
+    #                 # 计算梯度
+    #                 dx = gaussian_image[region_y, region_x + 1] - gaussian_image[region_y, region_x - 1]
+    #                 dy = gaussian_image[region_y - 1, region_x] - gaussian_image[region_y + 1, region_x]
                     
-                    # 计算梯度幅值（梯度强度决定投票数量）和方向（角度）
-                    gradient_magnitude = np.sqrt(dx * dx + dy * dy)
-                    gradient_orientation = np.rad2deg(np.arctan2(dy, dx))
+    #                 # 计算梯度幅值（梯度强度决定投票数量）和方向（角度）
+    #                 gradient_magnitude = np.sqrt(dx * dx + dy * dy)
+    #                 gradient_orientation = np.rad2deg(np.arctan2(dy, dx))
                     
-                    # 高斯加权
-                    # 距离越远，权重越小（指数衰减）
-                    # 公式exp(k * r²)是高斯函数的简化形式
-                    # 中心点权重最大（r=0时weight=1），随距离增加权重指数衰减
-                    distance_from_center = np.sqrt(i ** 2 + j ** 2)
-                    weight = np.exp(weight_factor * (distance_from_center ** 2))
+    #                 # 高斯加权
+    #                 # 距离越远，权重越小（指数衰减）
+    #                 # 公式exp(k * r²)是高斯函数的简化形式
+    #                 # 中心点权重最大（r=0时weight=1），随距离增加权重指数衰减
+    #                 distance_from_center = np.sqrt(i ** 2 + j ** 2)
+    #                 weight = np.exp(weight_factor * (distance_from_center ** 2))
                     
-                    # 累积到直方图中
-                    histogram_index = int(round(gradient_orientation * num_bins / 360.))
-                    histogram_index = histogram_index % num_bins
-                    raw_histogram[histogram_index] += weight * gradient_magnitude
+    #                 # 累积到直方图中
+    #                 histogram_index = int(round(gradient_orientation * num_bins / 360.))
+    #                 histogram_index = histogram_index % num_bins
+    #                 raw_histogram[histogram_index] += weight * gradient_magnitude
     
     # 平滑直方图
     # (6*自己 + 4*左邻居 + 4*右邻居 + 1*左左邻居 + 1*右右邻居)/16
@@ -328,15 +427,14 @@ def compute_keypoints_with_orientations(keypoint, octave_idx, gaussian_image, ra
             # 像跷跷板一样，中间的支点承重，两端体重，要让支点承重使得平衡，那这个平衡位置就是最终的峰值。
             # 移动量 = (左边体重 - 右边体重) / (左边体重 + 右边体重 - 2×支点承重)
             # 0.5系数，是归一化因子，限制偏移量在[-0.5, 0.5]范围内，因为是对index来进行偏移的。
-            interpolated_peak_index = (peak_index + 
-                                      (0.5 * (left_value - right_value)) / 
-                                      (left_value - 2 * peak_value + right_value)) % num_bins
+            interp_factor = 0.5 * (left_value - right_value) / (left_value - 2 * peak_value + right_value)
+            interpolated_peak_index = (peak_index + interp_factor) % num_bins
             
             # 计算方向（角度）
             # 360减去，数学计算中角度使用顺时针方向表示，但图像坐标系中Y轴是向下的（与数学坐标系相反）
-            orientation = 360. - interpolated_peak_index * 360. / num_bins
-            if abs(orientation - 360.) < 1e-7:  # 浮点数容差
-                orientation = 0
+            orientation = (360. - interpolated_peak_index * 360. / num_bins) % 360
+            # if abs(orientation - 360.) < 1e-7:  # 浮点数容差
+            #     orientation = 0
             
             # 创建带方向的新关键点
             new_keypoint = keypoint.copy()
@@ -345,7 +443,7 @@ def compute_keypoints_with_orientations(keypoint, octave_idx, gaussian_image, ra
     
     return keypoints_with_orientations
 
-def find_scale_space_extrema(gaussian_pyramid, dog_pyramid, sigma, num_intervals, border_width, contrast_thresh=0.04, candidate_num_keypoints=0, final_num_keypoints=0):
+def find_scale_space_extrema(gaussian_pyramid, dog_pyramid, sigma, num_intervals, border_width, contrast_thresh=0.04, final_num_keypoints=0):
     """
     在DoG金字塔中检测尺度空间极值点（关键点）
     
@@ -405,33 +503,21 @@ def find_scale_space_extrema(gaussian_pyramid, dog_pyramid, sigma, num_intervals
                     # 检查是否是极值点
                     if is_pixel_extremum(first_region, second_region, third_region, threshold):
                         # 精确定位关键点
-                        # localization_result = localize_extremum_via_quadratic_fit(
-                        #     i, j, middle_layer_idx, octave_idx, num_intervals, dog_octave,
-                        #     gaussian_sigmas[middle_layer_idx], contrast_thresh, border_width
-                        # )
-                        localization_result = localize_extremum_via_quadratic_fit(
+                        keypoint, localized_image_index = localize_extremum_via_quadratic_fit(
                             i, j, middle_layer_idx, octave_idx, num_intervals, dog_octave,
                             sigma, contrast_thresh, border_width
                         )
-                        if localization_result is not None:
-                            keypoint, localized_image_index = localization_result
+                        if localized_image_index is not None:
+                            # keypoint, localized_image_index = localization_result
                             # keypoints.append(keypoint)
                             keypoints_with_orientations = compute_keypoints_with_orientations(keypoint, octave_idx, gaussian_pyramid[octave_idx][localized_image_index])
                             for keypoint_with_orientation in keypoints_with_orientations:                              
                                 keypoints.append(keypoint_with_orientation)
-    #                             # 检查是否达到最大候选关键点数限制
-    #                             if len(keypoints) == candidate_num_keypoints:
-    #                                 # 按响应值降序排序
-    #                                 keypoints.sort(key=lambda x: x['response'], reverse=True)     
-    #                                 # 应用关键点数量限制
-    #                                 if final_num_keypoints > 0:
-    #                                     return keypoints[:final_num_keypoints]
-    #                                 else:
-    #                                     return keypoints
-    # # 如果未达到最大候选关键点数限制，则按响应值降序排序
-    # keypoints.sort(key=lambda x: x['response'], reverse=True)
-    # if final_num_keypoints > 0:
-    #     return keypoints[:final_num_keypoints]
+
+                                # 检查是否达到最大候选关键点数限制
+                                if len(keypoints) == final_num_keypoints:
+                                    return keypoints
+    # 如果未达到最大候选关键点数限制，或final_num_keypoints为0，则返回所有关键点
     return keypoints
 
 def visualize_keypoints(image, keypoints, title="检测到的SIFT关键点"):
