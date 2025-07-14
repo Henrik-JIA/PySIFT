@@ -23,6 +23,8 @@ class ImageLoader:
         self.image_data = []
         self.load_content = load_content
         
+        # 使用绝对路径
+        path = os.path.abspath(path)
         if os.path.isfile(path):
             self._load_single_image(path)
         elif os.path.isdir(path):
@@ -42,7 +44,7 @@ class ImageLoader:
                     "height": img.height,
                     "format": img.format,
                     "mode": img.mode,
-                    "size": os.path.getsize(image_path),
+                    "size_mb": os.path.getsize(image_path) / (1024 * 1024),
                     "exif": self._get_exif_data(img),
                     "gps": self._get_gps_info(self._get_exif_data(img))
                 }
@@ -61,7 +63,7 @@ class ImageLoader:
         
         for filename in os.listdir(folder_path):
             file_path = os.path.join(folder_path, filename)
-            if os.path.isfile(file_path) and os.path.splitext(filename)[1].lower() in image_extensions:
+            if os.path.isfile(file_path) and os.path.splitext(filename)[1].lower() in image_extensions:                
                 self._load_single_image(file_path)
     
     def _get_exif_data(self, image):

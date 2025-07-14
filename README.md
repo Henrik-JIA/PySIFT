@@ -22,7 +22,6 @@ Visualize converted and cleaned keypoints:
 FLANN match result: 
 ![image-20250714105424427](./assets/image-20250714105424427.png)
 
-
-
-
+RANSAC threshold = 2:
+![image-20250714165151161](./assets/image-20250714165151161.png)
 
