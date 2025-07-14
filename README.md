@@ -19,7 +19,7 @@ Visualize converted and cleaned keypoints:
 | ------------------------------------------------------------ | ------------------------------------------------------------ |
 | ![image-20250713214552959](./assets/image-20250713214552959.png) | ![image-20250713214740261](./assets/image-20250713214740261.png) |
 
-match result:
+FLANN match result: 
 ![image-20250714105424427](./assets/image-20250714105424427.png)
 
 
