@@ -60,7 +60,7 @@ def main():
 
 def match_descriptors(descriptors1, descriptors2, ratio_threshold=0.7):
     """
-    使用FLANN匹配器匹配两组描述符，并应用Lowe's ratio test
+    使用FLANN（快速近似最近邻搜索库）匹配器匹配两组描述符，并应用Lowe's ratio test
     
     参数:
         descriptors1 (numpy.ndarray): 第一组描述符
